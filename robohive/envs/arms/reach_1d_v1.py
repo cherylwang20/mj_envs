@@ -347,7 +347,7 @@ class ReachBaseV0(env_base_1.MujocoEnv):
             current_rgba = self.sim.model.geom_rgba[object_gid]
 
             # Create a small random change for RGB, leaving alpha unchanged
-            random_change = np.random.uniform(-0.1, 0.1, size=3)  # Small random change for RGB
+            random_change = np.random.uniform(-0.05, 0.05, size=3)  # Small random change for RGB
             new_rgb = np.clip(current_rgba[:3] + random_change, 0, 1)  # Adjust RGB and ensure values are within [0, 1]
 
             # Update the RGBA values in the simulation
