@@ -84,7 +84,7 @@ class ReachBaseV0(env_base_2.MujocoEnv):
         self.current_image = np.ones((image_width, image_height, 3), dtype=np.uint8)
         self.vel_action = [0]*6
         self.contact = 0 
-        #frame_skip = np.random.randint(12, 27)
+        frame_skip = 20 #np.random.randint(12, 20)
         super()._setup(obs_keys=obs_keys,
                        proprio_keys=proprio_keys,
                        weighted_reward_keys=weighted_reward_keys,
@@ -100,7 +100,8 @@ class ReachBaseV0(env_base_2.MujocoEnv):
         obs_dict['qp_robot'] = sim.data.qpos[:7].copy()
         obs_dict['qv_robot'] = self.vel_action.copy()
         obs_dict['reach_err'] = sim.data.site_xpos[self.target_sid]-sim.data.site_xpos[self.grasp_sid]
-        obs_dict['goal_pos'] = sim.data.site_xpos[self.target_sid]
+        obs_dict['goal_pos'] = sim.data.site_xpos[self.target_sid].copy()
+        print(obs_dict['goal_pos'])
 
         self.get_image_data()
 
@@ -153,10 +154,10 @@ class ReachBaseV0(env_base_2.MujocoEnv):
         if rgb.dtype != np.uint8:
             rgb = (rgb * 255).astype(np.uint8)
 
-        cv.imshow('Resized Image', rgb)  # This creates a window named 'Resized Image' and shows the image
+        #cv.imshow('Resized Image', rgb)  # This creates a window named 'Resized Image' and shows the image
 
-        cv.waitKey(1000)  # Waits indefinitely for a key press
-        cv.destroyAllWindows()  # Closes all the OpenCV windows
+        #cv.waitKey(1000)  # Waits indefinitely for a key press
+        #cv.destroyAllWindows()  # Closes all the OpenCV windows
 
         self.current_image = rgb/255
 
@@ -241,6 +242,8 @@ class ReachBaseV0(env_base_2.MujocoEnv):
                                         dt=self.dt,
                                         #realTimeSim=self.mujoco_render_frames,
                                         render_cbk=self.mj_render if self.mujoco_render_frames else None)
+        
+        #print(self.last_ctrl, self.sim.data.qpos[:6])
         return self.forward(**kwargs)
     
     def forward(self,**kwargs):
@@ -255,6 +258,7 @@ class ReachBaseV0(env_base_2.MujocoEnv):
 
         # observation
         obs = self.get_obs(**kwargs)
+        #print(obs)
 
         # rewards
         self.expand_dims(self.obs_dict) # required for vectorized rewards calculations

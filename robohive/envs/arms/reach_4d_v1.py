@@ -234,9 +234,9 @@ class ReachBaseV0(env_base_1.MujocoEnv):
             #('power_cost', power_cost),
             # Must keys
             ('sparse',  pix_perc),
-            ('solved',  np.array([self.touch_success]) >= 1),
+            ('solved',  np.array([self.touch_success]) >= 5),
             ('gripper_height',  gripper_height - 0.83),
-            ('done', np.array([self.touch_success >= 1])), #    obj_height  - self.obj_init_z > 0.2, #reach_dist > far_th
+            ('done', np.array([self.touch_success >= 5])), #    obj_height  - self.obj_init_z > 0.2, #reach_dist > far_th
         ))
         if not self.eval_mode:
             rwd_dict['dense'] = np.sum([wt*rwd_dict[key] for key, wt in self.rwd_keys_wt.items()], axis=0)
