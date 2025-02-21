@@ -163,8 +163,8 @@ class ReachBaseV0(env_base_1.MujocoEnv):
     def get_obs_dict(self, sim):
         obs_dict = {}
         obs_dict['time'] = np.array([self.sim.data.time])
-        obs_dict['qp_robot'] = sim.data.qpos[:7].copy() + np.random.normal(loc=0, scale=0.01, size=7)
-        obs_dict['qv_robot'] = self.vel_action.copy() + np.random.normal(loc=0, scale=0.01, size=7)
+        obs_dict['qp_robot'] = sim.data.qpos[:7].copy() + np.random.normal(loc=0, scale=0.1, size=7)
+        obs_dict['qv_robot'] = self.vel_action.copy() + np.random.normal(loc=0, scale=0.1, size=7)
         #print('gripper velocity & position', obs_dict['qp_robot'][-1], obs_dict['qv_robot'][-1])
         obs_dict['xmat_pinch'] = mat2euler(np.reshape(self.sim.data.site_xmat[self.grasp_sid], (3, 3)))
         #obs_dict['obj_ori'] = mat2euler(np.reshape(self.sim.data.site_xmat[self.target_sid], (3, 3)))
