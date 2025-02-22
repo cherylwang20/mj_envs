@@ -18,6 +18,9 @@ import torch
 from PIL import Image
 import torchvision.transforms as transforms
 import torch 
+import warnings
+warnings.filterwarnings("ignore", category=DeprecationWarning, module='kornia.augmentation._2d.intensity.gaussian_blur')
+
 
 from robohive.envs import env_base_2
 from robohive.envs.arms.python_api_2 import BodyIdInfo, arm_control, get_touching_objects, ObjLabels
@@ -84,7 +87,7 @@ class ReachBaseV0(env_base_2.MujocoEnv):
         self.current_image = np.ones((image_width, image_height, 3), dtype=np.uint8)
         self.vel_action = [0]*6
         self.contact = 0 
-        #frame_skip = np.random.randint(12, 27)
+        frame_skip = np.random.randint(12, 40)
         super()._setup(obs_keys=obs_keys,
                        proprio_keys=proprio_keys,
                        weighted_reward_keys=weighted_reward_keys,
@@ -131,7 +134,7 @@ class ReachBaseV0(env_base_2.MujocoEnv):
             self.sim.renderer.render_offscreen(height=height,width=width,  camera_id=camera, depth = True)
         )
         
-        self.rgb_out = rgb
+        
 
         rgb = cv.cvtColor(rgb, cv.COLOR_BGR2RGB)
         
@@ -153,11 +156,7 @@ class ReachBaseV0(env_base_2.MujocoEnv):
         if rgb.dtype != np.uint8:
             rgb = (rgb * 255).astype(np.uint8)
 
-        cv.imshow('Resized Image', rgb)  # This creates a window named 'Resized Image' and shows the image
-
-        cv.waitKey(1000)  # Waits indefinitely for a key press
-        cv.destroyAllWindows()  # Closes all the OpenCV windows
-
+        self.rgb_out = rgb
         self.current_image = rgb/255
 
 
@@ -179,11 +178,11 @@ class ReachBaseV0(env_base_2.MujocoEnv):
         return images
 
     def augment_image(self, rgb):
-        low , high = 0.8, 1.2
+        low , high = 0.9, 1.1
         transform = torch.nn.Sequential(
-            KAug.RandomContrast(contrast=(low, high), clip_output=True, p=0.8),
-            KAug.RandomBrightness((low, high)),
-            KAug.RandomSaturation((low, high)), 
+            KAug.RandomContrast(contrast=(0.9, 1.1), clip_output=True, p=0.8),
+            KAug.RandomBrightness((0.9, 1.1)),
+            KAug.RandomSaturation((0.9, 1.1)), 
             KAug.RandomGaussianBlur(kernel_size=(5, 5), sigma=(low, high), p=0.5),
             KAug.RandomGaussianNoise(mean=0., std=.01, p=0.3)
         )
@@ -276,7 +275,7 @@ class ReachBaseV0(env_base_2.MujocoEnv):
         self.sim.model.site_pos[self.target_sid] = self.np_random.uniform(high=self.target_xyz_range['high'], low=self.target_xyz_range['low'])
         self.sim_obsd.model.site_pos[self.target_sid] = self.sim.model.site_pos[self.target_sid]
         obj_xyz_ranges = {
-            'object': {'low': [-0.35, -0.05, 0], 'high': [.35, 0.05, 0]},
+            'object': {'low': [-0.55, -0.05, 0], 'high': [.55, 0.05, 0]},
         }
 
         new_x, new_y = np.random.uniform(
