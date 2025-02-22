@@ -103,7 +103,8 @@ class ReachBaseV0(env_base_2.MujocoEnv):
         obs_dict['qp_robot'] = sim.data.qpos[:7].copy()
         obs_dict['qv_robot'] = self.vel_action.copy()
         obs_dict['reach_err'] = sim.data.site_xpos[self.target_sid]-sim.data.site_xpos[self.grasp_sid]
-        obs_dict['goal_pos'] = sim.data.site_xpos[self.target_sid]
+        obs_dict['goal_pos'] = sim.data.site_xpos[self.target_sid].copy()
+        print(obs_dict['goal_pos'])
 
         self.get_image_data()
 
@@ -240,6 +241,8 @@ class ReachBaseV0(env_base_2.MujocoEnv):
                                         dt=self.dt,
                                         #realTimeSim=self.mujoco_render_frames,
                                         render_cbk=self.mj_render if self.mujoco_render_frames else None)
+        
+        #print(self.last_ctrl, self.sim.data.qpos[:6])
         return self.forward(**kwargs)
     
     def forward(self,**kwargs):
@@ -254,6 +257,7 @@ class ReachBaseV0(env_base_2.MujocoEnv):
 
         # observation
         obs = self.get_obs(**kwargs)
+        #print(obs)
 
         # rewards
         self.expand_dims(self.obs_dict) # required for vectorized rewards calculations
