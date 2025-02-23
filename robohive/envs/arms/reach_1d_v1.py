@@ -13,6 +13,7 @@ We are using this as a testing ground for reaching with visual inputs.
 import warnings
 import kornia.augmentation as KAug
 import kornia.enhance as KEnhance
+from PIL import Image
 # Suppress all deprecation warnings
 warnings.simplefilter("ignore", DeprecationWarning)
 
@@ -116,7 +117,9 @@ class ReachBaseV0(env_base_1.MujocoEnv):
         self.cam_init = True
         #self.channel = 1
         self.channel = kwargs['channel']
+        self.MERGE = kwargs['MERGE']
         self._setup_camera()
+        self.merge_images = np.load('/home/cheryl16/projects/def-durandau/RL-Chemist/resized_images.npy')
 
         self.current_image = np.ones((image_width, image_height, self.channel), dtype=np.uint8)
         self.object_image = np.ones((image_width, image_height, 3), dtype=np.uint8)
@@ -530,6 +533,8 @@ class ReachBaseV0(env_base_1.MujocoEnv):
         rgb = torch.from_numpy(rgb).float() / 255.0
         rgb = rgb.permute(2, 0, 1).unsqueeze(0)
         rgb = self.augment_image(rgb)
+        if self.MERGE:
+            rgb = self.merge_image(rgb)
 
         #return the rgb to its original shape
         if rgb.dim() == 4:
@@ -582,6 +587,14 @@ class ReachBaseV0(env_base_1.MujocoEnv):
         augmented_rgb = self.transform(rgb)
 
         return augmented_rgb
+
+    def merge_image(self, rgb, alpha_low = 0.7):
+        tmp_image = random.choice(self.merge_images)
+        tmp_tensor = torch.from_numpy(tmp_image)
+        tmp_tensor = tmp_tensor.permute(2, 0, 1).unsqueeze(0) 
+        alpha = random.uniform(alpha_low, 1)
+        merged_image = kornia.enhance.add_weighted(rgb, alpha, tmp_tensor, 1 - alpha, 1)
+        return merged_image
     
     def depth_2_meters(self, depth):
         """
