@@ -10,6 +10,8 @@
         <material name="silicone" rgba="0.1882 0.1882 0.1882 1"/>
         <material name="gray" rgba="0.4627 0.4627 0.4627 1"/>
         <material name="mug" specular="1" shininess="1"/>
+        <texture name="wallBG" type="cube" height="10" width="10" file="./assets/BG.png" />
+        <material name="wallBG" texture="wallBG" rgba="0.75 0.75 0.75 1" shininess="10" reflectance="1" texuniform="false" />
 
         <mesh name="apple" file="../../../../simhive/object_sim/apple/apple.stl" scale = '0.7 0.7 0.7'/>
         <mesh name="a_contact0" file="../../../../simhive/object_sim/apple/contact0.stl" scale = '0.7 0.7 0.7'/>
