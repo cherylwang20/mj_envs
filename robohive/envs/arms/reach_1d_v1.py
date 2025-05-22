@@ -91,7 +91,7 @@ class ReachBaseV0(env_base_1.MujocoEnv):
                image_width = 212,
                image_height= 120,
                obj_xyz_range = None,
-               frame_skip = 20,#40,
+               frame_skip = 20,
                reward_mode = "dense",
                obs_keys=DEFAULT_OBS_KEYS,
                proprio_keys=DEFAULT_PROPRIO_KEYS,
@@ -118,6 +118,7 @@ class ReachBaseV0(env_base_1.MujocoEnv):
         #self.channel = 1
         self.channel = kwargs['channel']
         self.MERGE = kwargs['MERGE']
+        self.fp = kwargs['fs']
         self._setup_camera()
         self.merge_images = np.load('/home/cheryl16/projects/def-durandau/RL-Chemist/resized_images.npy')
 
@@ -141,6 +142,7 @@ class ReachBaseV0(env_base_1.MujocoEnv):
         self.camera_matrix = None
         self.depth = 0
         self.eval = False
+        #self.frame_skip = random.randint(80, 100)
         #np.random.seed(47005)
         #random.seed(47005)
         
@@ -257,6 +259,9 @@ class ReachBaseV0(env_base_1.MujocoEnv):
     def reset(self, reset_qpos=None, reset_qvel=None, **kwargs):
         #print('resetting')
         #self.target_sid = self.sim.model.site_name2id(self.target_site_name)
+        self.frame_skip = random.randint(20, 25) #self.fp
+        #print('reset', self.frame_skip)
+        print(self.dt)
         self.grasping_steps_left = 0
         self.grasp_attempt = 0
         self.touch_success = 0
@@ -486,7 +491,7 @@ class ReachBaseV0(env_base_1.MujocoEnv):
         
         
         if self.check_collision():
-            print("Collision detected, reverting action")
+            #print("Collision detected, reverting action")
             self.rwd_dict['dense'] -= 1
             self.restore_state()
     

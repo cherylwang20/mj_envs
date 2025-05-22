@@ -51,14 +51,14 @@ class ReachBaseV0(env_base_1.MujocoEnv):
         'qp_robot', 'qv_robot'
     ]
     DEFAULT_RWD_KEYS_AND_WEIGHTS = {
-                "distance": 0.0, 
-                "contact": 0.,
-                'penalty': 1.,
-                'sparse': 0,
-                'mask_size': 0.9,
-                "done": 0.,
-            }
-    
+        "reach": 1, #the reach reward here is the distance
+        "contact": 1,
+        'sparse': 0,
+        'solved': 0,
+        "done": 10,
+    }
+
+
     def __init__(self, model_path, obsd_model_path=None, seed=None, **kwargs):
 
         # EzPickle.__init__(**locals()) is capturing the input dictionary of the init method of this class.
@@ -85,7 +85,7 @@ class ReachBaseV0(env_base_1.MujocoEnv):
                image_width = 212,
                image_height= 120,
                obj_xyz_range = None,
-               frame_skip = 20,
+               frame_skip = 20,#40,
                reward_mode = "dense",
                obs_keys=DEFAULT_OBS_KEYS,
                proprio_keys=DEFAULT_PROPRIO_KEYS,
@@ -112,7 +112,6 @@ class ReachBaseV0(env_base_1.MujocoEnv):
         #self.channel = 1
         self.channel = kwargs['channel']
         self.MERGE = kwargs['MERGE']
-        self.fp = kwargs['fs']
         self._setup_camera()
         self.merge_images = np.load('/home/cheryl16/projects/def-durandau/RL-Chemist/resized_images.npy')
 
@@ -120,14 +119,6 @@ class ReachBaseV0(env_base_1.MujocoEnv):
         self.object_image = np.ones((image_width, image_height, 3), dtype=np.uint8)
         self.rgb_out = np.ones((image_width, image_height))
         self.mask_out = np.ones((image_width, image_height))
-
-        ## Touch
-        self.left_touch = False
-        self.left_touch_rewarded = False
-        self.right_touch = False
-        self.right_touch_rewarded = False
-        self.touch_count = 0
-        self.touch_rewards = 0
         
         self.obj_scale_change = [0.05, 0.05, 0.05]
         self.obj_mass_change = (-0.050, 0.050)
@@ -137,7 +128,6 @@ class ReachBaseV0(env_base_1.MujocoEnv):
         self.pixel_perc = 0
         self.total_pix = 0
         self.touch_success = 0
-        self._min_dist = 10000
         self.single_touch = 0
         self.target_x, self.target_y = 0, 0
         self.target_r = 0
@@ -145,7 +135,6 @@ class ReachBaseV0(env_base_1.MujocoEnv):
         self.camera_matrix = None
         self.depth = 0
         self.eval = False
-        #self.frame_skip = random.randint(80, 100)
         #np.random.seed(47005)
         #random.seed(47005)
         
@@ -161,9 +150,9 @@ class ReachBaseV0(env_base_1.MujocoEnv):
 
         super()._setup(obs_keys=obs_keys,
                        proprio_keys=proprio_keys,
+                       weighted_reward_keys=weighted_reward_keys,
                        reward_mode=reward_mode,
                        frame_skip=frame_skip,
-                       weighted_reward_keys=weighted_reward_keys,
                        **kwargs)
         self.init_qpos[:] = self.sim.model.key_qpos[3].copy()
 
@@ -201,93 +190,68 @@ class ReachBaseV0(env_base_1.MujocoEnv):
         # Function to convert touching body set to an binary observation vector
         # order follows the definition in python_api file
         obs_vec = np.array([0, 0, 0])
-        self.left_touch = False
-        self.right_touch = False
         for i in touching_body:
             if i == ObjLabels.LEFT_GRIP:
                 obs_vec[0] += 1
-                self.left_touch = True
             elif i == ObjLabels.RIGHT_GRIP:
                 obs_vec[1] += 1
-                self.right_touch = True
             else:
                 obs_vec[2] += 1
 
         return obs_vec
-
-    def calculate_img_reward(self, perc):        
-        return (2.0/(1+np.exp(-perc*10.0))) - 1.0 
-    
     
     def get_reward_dict(self, obs_dict):
-        self.distance = np.linalg.norm(obs_dict['reach_err'], axis=-1)[0]
-        
-        if self.distance < self._min_dist:
-            self._min_dist = self.distance
-        
-        mask_size_reward = np.array([self.calculate_img_reward(self.pixel_perc / 100)])
+        reach_dist = np.linalg.norm(obs_dict['reach_err'], axis=-1)[0]
+        self.depth = reach_dist
+        total_pix = np.linalg.norm(obs_dict['total_pix'], axis=-1)[0]
+        #target_dist = np.linalg.norm(obs_dict['target_err'], axis=-1)[0]
+        claw_rot_err = np.linalg.norm(obs_dict['claw_ori_err'], axis=-1)[0]
+        #obj_ori_err = np.linalg.norm(obs_dict['obj_ori_err'], axis=-1)[0]
+        #print(claw_rot_err)
+        obj_height = np.array([self.sim.data.site_xpos[self.target_sid][-1]])
+        gripper_height = np.array([self.sim.data.site_xpos[self.grasp_sid][-1]])
+        pix_perc = np.array([self.pixel_perc - 2.4234])/10
         contact = np.array([np.sum(obs_dict["touching_body"][0][0][:2])])
-        
-        done_1 = np.full((1,), False, dtype=np.bool_)
-        done_2 = False
-                
+        #print(contact)
+        if contact == 1:
+            self.single_touch += 1
+            if self.single_touch == 1:
+                print('first touch')
+        elif contact == 2:
+            if self.touch_success == 1:
+                print('grasping')
+            self.touch_success +=1
+        #print(contact)
+        total_pix = np.linalg.norm(obs_dict['total_pix'], axis=-1)[0]
         rwd_dict = collections.OrderedDict((
-            ('distance',  self.distance),
-            ('contact', contact),
-            ('penalty', np.array([-1])),  
-            ('sparse',  np.array([0])),
-            ('solved',  np.array([0])),
-            ('mask_size',  mask_size_reward),
-            ('done', done_1),  
-        )) 
-
+            # Optional Keys[]
+            ('reach',  total_pix ),
+            #('target_dist',   target_dist + np.log(target_dist + 1e-6)),
+            ('claw_ori',  np.exp(-claw_rot_err**2)),
+            #('obj_ori', np.exp(-obj_ori_err**2)),
+            #('obj_ori',   -(obj_rot_err[0])**2), 
+            #('bonus',   total_pix > 10),
+            ('contact', contact == 2),
+            ('penalty', np.array([-1])),
+            #('power_cost', power_cost),
+            # Must keys
+            ('sparse',  pix_perc),
+            ('solved',  np.array([self.touch_success]) >= 1),
+            ('gripper_height',  gripper_height - 0.83),
+            ('done', np.array([self.touch_success >= 1])), #    obj_height  - self.obj_init_z > 0.2, #reach_dist > far_th
+        ))
         if not self.eval_mode:
             rwd_dict['dense'] = np.sum([wt*rwd_dict[key] for key, wt in self.rwd_keys_wt.items()], axis=0)
-            
-            if self.left_touch and not self.left_touch_rewarded:
-                self.left_touch_rewarded = True
-                # rwd_dict['dense'] += 0.5
-                print(f'{self.target_site_name} Left Touch!')
-            if self.right_touch and not self.right_touch_rewarded:
-                self.right_touch_rewarded = True
-                # rwd_dict['dense'] += 0.5
-                print(f'{self.target_site_name} Right Touch!')
         else:
-            rwd_dict['dense'] = 1.0 if done_2 else 0
+            rwd_dict['dense'] = 1.0 if contact == 2 else 0
             rwd_dict['done'] = contact == 2
-
-        if self.left_touch and self.right_touch:
-            self.touch_rewards += 0.5
-            if self.touch_rewards <= 2.6:
-                rwd_dict['dense'] += 0.5
-            self.touch_count += 1
-            if self.touch_count == 5:
-                last_pos = self.sim.data.qpos[:self.sim.model.nu].copy()
-                reset_qpos = self.sim.model.key_qpos[0].copy()
-                self.robot.move_to_pos(last_pos, reset_qpos, 100)
-                
-                this_model = self.sim.model
-                id_info = BodyIdInfo(this_model)
-                this_data = self.sim.data
-                touching_objects = set(get_touching_objects(this_model, this_data, id_info, self.target_site_name))
-                self._obj_label_to_obs(touching_objects)
-                
-                if self.left_touch and self.right_touch:
-                    rwd_dict['done'] = np.full((1,), True, dtype=np.bool_)
-                    rwd_dict['dense'] += 10.0
-                    last_pos = self.sim.data.qpos[:self.sim.model.nu].copy()
-                    print(f'!!!! {self.target_site_name} Touch Down !!!!   ---   POS: {last_pos}\n')
-                else:
-                    rwd_dict['done'] = np.full((1,), True, dtype=np.bool_)
-                    last_pos = self.sim.data.qpos[:self.sim.model.nu].copy()
-                    print(f'POS: {last_pos}\n')
-
-        else:
-            self.touch_count = 0
-
+        gripper_width = np.linalg.norm([self.sim.data.site_xpos[self.sim.model.site_name2id('left_silicone_pad')]- 
+                                 self.sim.data.site_xpos[self.sim.model.site_name2id('right_silicone_pad')]], axis = -1)
         return rwd_dict
     
     def reset(self, reset_qpos=None, reset_qvel=None, **kwargs):
+        #print('resetting')
+        #self.target_sid = self.sim.model.site_name2id(self.target_site_name)
         self.grasping_steps_left = 0
         self.grasp_attempt = 0
         self.touch_success = 0
@@ -304,87 +268,73 @@ class ReachBaseV0(env_base_1.MujocoEnv):
             number = np.random.randint(0, 5)
         self.target_site_name = target_sites[number]
         print(self.target_site_name, target_names[number])
-        self.target_sid = self.sim.model.site_name2id(self.target_site_name)
-
-        # Load object image
+        self.target_sid = self.sim.model.site_name2id(self.target_site_name) #object name
         current_directory = os.getcwd()
         self.object_image = cv.imread(current_directory + '/mj_envs/robohive/envs/arms/object_image/' + self.target_site_name + '.png', cv.IMREAD_COLOR)
         self.object_image = cv.cvtColor(self.object_image, cv.COLOR_BGR2RGB)
 
-        # Define object position ranges on the table
         obj_xyz_ranges = {
             'object': {'low': [-0.05, -0.05, 0], 'high': [0.15, 0.15, 0]},
         }
 
-        # Generate random table position (x, y)
         new_x, new_y = np.random.uniform(
-            low=[obj_xyz_ranges['object']['low'][0], obj_xyz_ranges['object']['low'][1]],
-            high=[obj_xyz_ranges['object']['high'][0], obj_xyz_ranges['object']['high'][1]],
-            size=2
+                low=[obj_xyz_ranges['object']['low'][0], obj_xyz_ranges['object']['low'][1]],
+                high=[obj_xyz_ranges['object']['high'][0], obj_xyz_ranges['object']['high'][1]],
+                size=2
         )
 
-        # Copy initial qpos
         reset_qpos = self.sim.model.key_qpos[3].copy()
+        position_vec = []
 
-        # Loop through all objects
         for obj_name in target_sites:
+            objec_bid = self.sim.model.body_name2id(obj_name)  # get body ID using object name
+            object_jnt_adr = self.sim.model.body_jntadr[objec_bid]
+            object_qpos_adr = self.sim.model.jnt_qposadr[object_jnt_adr]
+            initial_pos = reset_qpos[object_qpos_adr:object_qpos_adr + 3]  # copy the initial position
+            z_coord = initial_pos[2]  # get the fixed z-coordinate from the initial position
+
+            # Generate new x, y positions within specified ranges, keeping z constant
+            new_pos = [initial_pos[0] + new_x, initial_pos[1] + new_y, z_coord]
+            if obj_name == 'object_4': 
+                beak_pos = new_pos
+                beak_pos[-1] -= 0.05
+                position_vec.append(beak_pos)
+            else:
+                position_vec.append(new_pos)
+            # Set the new position in the simulation
+            #self.sim.model.body_pos[objec_bid] = new_pos
+            reset_qpos[object_qpos_adr:object_qpos_adr + 3] = new_pos
+            if obj_name == 'object_4': 
+                objec_bid = self.sim.model.body_name2id('base_rbf')  # get body ID using object name
+                object_jnt_adr = self.sim.model.body_jntadr[objec_bid]
+                object_qpos_adr = self.sim.model.jnt_qposadr[object_jnt_adr]
+                new_pos = [initial_pos[0] + new_x, initial_pos[1] + new_y, z_coord]
+                initial_pos = reset_qpos[object_qpos_adr:object_qpos_adr + 3]  # copy the initial position
+                z_coord = initial_pos[2]  # get the fixed z-coordinate from the initial position
+                new_pos = [initial_pos[0] + new_x, initial_pos[1] + new_y, z_coord]
+                reset_qpos[object_qpos_adr:object_qpos_adr + 3] = new_pos
+
+
+        position_vec = sorted(position_vec, key=lambda x: random.random())
+        for idx, (obj_name, pos) in enumerate(zip(target_sites, position_vec)):
             objec_bid = self.sim.model.body_name2id(obj_name)
             object_jnt_adr = self.sim.model.body_jntadr[objec_bid]
             object_qpos_adr = self.sim.model.jnt_qposadr[object_jnt_adr]
-
-            # Fetch original z height to preserve table level
-            original_pos = reset_qpos[object_qpos_adr:object_qpos_adr + 3].copy()
-            z_table = original_pos[2]
-
-            # Get cardbox dimensions if it exists
-            cardbox_height = 0
-            if 'cardbox' in self.sim.model.body_names:
-                cardbox_bid = self.sim.model.body_name2id('cardbox')
-                cardbox_jnt_adr = self.sim.model.body_jntadr[cardbox_bid]
-                cardbox_qpos_adr = self.sim.model.jnt_qposadr[cardbox_jnt_adr]
-                cardbox_size = self.sim.model.geom_size[self.sim.model.body_geomadr[cardbox_bid]]
-                cardbox_height = cardbox_size[1] * 2  # Assuming y is the height dimension
-
-            if obj_name == self.target_site_name:
-                # Place chosen target object on cardbox (or table if no cardbox) at randomized x, y
-                if 'cardbox' in self.sim.model.body_names:
-                    new_pos = [original_pos[0] + new_x, original_pos[1] + new_y, z_table + cardbox_height]
-                    # Move cardbox together with the object
-                    reset_qpos[cardbox_qpos_adr:cardbox_qpos_adr + 3] = [original_pos[0] + new_x, original_pos[1] + new_y, z_table]
-                else:
-                    new_pos = [original_pos[0] + new_x, original_pos[1] + new_y, z_table]
-            else:
-                # Drop all other objects to the floor (or on cardbox if specified)
-                if 'cardbox' in self.sim.model.body_names:
-                    new_pos = [original_pos[0], original_pos[1], z_table + cardbox_height]
-                    # Move cardbox together with the object
-                    reset_qpos[cardbox_qpos_adr:cardbox_qpos_adr + 3] = [original_pos[0], original_pos[1], z_table]
-                else:
-                    new_pos = [original_pos[0], original_pos[1], z_table - 0.3]  # Adjust drop height as needed
-
-            # Update the object's position
-            reset_qpos[object_qpos_adr:object_qpos_adr + 3] = new_pos
-
-            # Handle special linked base if needed (e.g., 'object_4' and 'base_rbf')
+            
+            if obj_name == 'object_8':
+                pos[-1] += 0.08
             if obj_name == 'object_4':
-                base_bid = self.sim.model.body_name2id('base_rbf')
-                base_jnt_adr = self.sim.model.body_jntadr[base_bid]
-                base_qpos_adr = self.sim.model.jnt_qposadr[base_jnt_adr]
+                pos[-1] += 0.08  # Adjust z by 0.05 for object_4
 
-                if obj_name == self.target_site_name:
-                    if 'cardbox' in self.sim.model.body_names:
-                        base_pos = [original_pos[0] + new_x, original_pos[1] + new_y, z_table + cardbox_height - 0.01]
-                    else:
-                        base_pos = [original_pos[0] + new_x, original_pos[1] + new_y, z_table - 0.01]
-                else:
-                    if 'cardbox' in self.sim.model.body_names:
-                        base_pos = [original_pos[0], original_pos[1], z_table + cardbox_height - 0.01]
-                    else:
-                        base_pos = [original_pos[0], original_pos[1], z_table - 0.3]
-                
-                reset_qpos[base_qpos_adr:base_qpos_adr + 3] = base_pos
+            reset_qpos[object_qpos_adr:object_qpos_adr + 3] = pos
+
+            if obj_name == 'object_4':  # Special handling for object_4
+                objec_bid = self.sim.model.body_name2id('base_rbf')
+                object_jnt_adr = self.sim.model.body_jntadr[objec_bid]
+                object_qpos_adr = self.sim.model.jnt_qposadr[object_jnt_adr]
+                pos[-1] -= 0.01
+                reset_qpos[object_qpos_adr:object_qpos_adr + 3] = pos
         
-        #changing the color of the objects
         for i in range(len(target_sites)):
             objec_bid = self.sim.model.body_name2id(target_sites[i])
             #self.object_augment(objec_bid, target_names[i])
@@ -531,7 +481,7 @@ class ReachBaseV0(env_base_1.MujocoEnv):
         
         
         if self.check_collision():
-            #print("Collision detected, reverting action")
+            print("Collision detected, reverting action")
             self.rwd_dict['dense'] -= 1
             self.restore_state()
     

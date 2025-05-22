@@ -278,6 +278,36 @@ register(
 )
 
 register(
+    id='UR10ePickPlace-v0',
+    entry_point='robohive.envs.arms.pick_place_v1:ReachBaseV0',
+    max_episode_steps=250, #50steps*40Skip*2ms = 4s
+    kwargs={
+        'model_path': curr_dir+'/ur10e/scene_five_obj.xml',
+        #'config_path': curr_dir+'/ur10e/ur10e_v0.config',
+        'robot_site_name': "pinch",
+        'target_site_name': "object_1",
+        #'obj_xyz_range': {'high':[0.4, 0.55, 0.995831], 'low':[0.35, 0.6 ,0.995831]}, #{'high':[0.2, 0.3, 0.895831], 'low':[-0.3, 0.6 ,0.895831]},
+        'goal_site_name': "place_target",
+        'target_xyz_range': {'high':[-0.435, 0.5, 0.9], 'low':[-0.435, 0.5, 0.9]}
+    }
+)
+
+register(
+    id='UR10eMask1C-v1',
+    entry_point='robohive.envs.arms.mask_1d_v1:ReachBaseV0',
+    max_episode_steps=250, #50steps*40Skip*2ms = 4s
+    kwargs={
+        'model_path': curr_dir+'/ur10e/scene_five_obj.xml',
+        #'config_path': curr_dir+'/ur10e/ur10e_v0.config',
+        'robot_site_name': "pinch",
+        'target_site_name': "object_1",
+        #'obj_xyz_range': {'high':[0.4, 0.55, 0.995831], 'low':[0.35, 0.6 ,0.995831]}, #{'high':[0.2, 0.3, 0.895831], 'low':[-0.3, 0.6 ,0.895831]},
+        'goal_site_name': "place_target",
+        'target_xyz_range': {'high':[-0.435, 0.5, 0.9], 'low':[-0.435, 0.5, 0.9]}
+    }
+)
+
+register(
     id='UR10eReach4C-v1',
     entry_point='robohive.envs.arms.reach_4d_v1:ReachBaseV0',
     max_episode_steps=250, #50steps*40Skip*2ms = 4s
@@ -807,40 +837,6 @@ register_env_variant(
 
 
 #Register env for UR10e
-
-register(
-    id='UR10ePickPlaceFixed-v0',
-    entry_point='robohive.envs.arms.pick_place_v1:PickPlaceV0',
-    max_episode_steps=200, #50steps*40Skip*2ms = 4s
-    kwargs={
-        'model_path': curr_dir+'/ur10e/scene_gripper.xml',
-        'robot_ndof': 14,
-        'robot_site_name': "pinch",
-        'object_site_name': "obj0",
-        'target_site_name': "pick_target",
-        'target_xyz_range': {'high':[-.235, 0.5, 0.85], 'low':[-.235, 0.5, 0.85]},
-    }
-)
-
-
-# Random Targets
-register(
-    id='UR10ePickPlaceRandom-v0',
-    entry_point='robohive.envs.arms.pick_place_v0:PickPlaceV0',
-    max_episode_steps=50,
-    kwargs={
-        'model_path': curr_dir+'/ur10e/scene.xml',
-        #'config_path': curr_dir+'/franka/assets/franka_busbin_v0.config',
-        'robot_ndof': 6,
-        'robot_site_name': "attachment_site",
-        'object_site_name': "obj0",
-        'target_site_name': "drop_target",
-        'randomize': True,
-        'target_xyz_range': {'high':[-.135, 0.6, 0.85], 'low':[-.335, 0.4, 0.85]},
-        'geom_sizes': {'high':[.03, .03, .03], 'low':[.02, 0.02, 0.02]},
-    }
-)
-
 register(
     id='UR10ePickPlaceRandom_v2d-v0',
     entry_point='robohive.envs.arms.pick_place_v0:PickPlaceV0',
