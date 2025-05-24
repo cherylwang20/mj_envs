@@ -26,7 +26,7 @@ from scipy.spatial.transform import Rotation as R
 import torch
 import random
 # Set environment variables
-import gym
+import gymnasium as gym
 import numpy as np
 import cv2 as cv
 import os
@@ -313,7 +313,7 @@ class ReachBaseV0(env_base_1.MujocoEnv):
 
         # Define object position ranges on the table
         obj_xyz_ranges = {
-            'object': {'low': [-0.05, -0.05, 0], 'high': [0.15, 0.15, 0]},
+            'object': {'low': [-0.05, -0.05, 0], 'high': [0.1, 0.1, 0]},
         }
 
         # Generate random table position (x, y)
@@ -327,6 +327,10 @@ class ReachBaseV0(env_base_1.MujocoEnv):
         reset_qpos = self.sim.model.key_qpos[3].copy()
 
         # Loop through all objects
+        cardbox_height = 0.055  # e.g., 3 cm height
+        gap_between_cardbox_and_object = 0.05  # e.g., 5 mm gap
+        min_spacing_above_table = 0.01  # clearance between cardbox and table
+
         for obj_name in target_sites:
             objec_bid = self.sim.model.body_name2id(obj_name)
             object_jnt_adr = self.sim.model.body_jntadr[objec_bid]
@@ -336,31 +340,14 @@ class ReachBaseV0(env_base_1.MujocoEnv):
             original_pos = reset_qpos[object_qpos_adr:object_qpos_adr + 3].copy()
             z_table = original_pos[2]
 
-            # Get cardbox dimensions if it exists
-            cardbox_height = 0
-            if 'cardbox' in self.sim.model.body_names:
-                cardbox_bid = self.sim.model.body_name2id('cardbox')
-                cardbox_jnt_adr = self.sim.model.body_jntadr[cardbox_bid]
-                cardbox_qpos_adr = self.sim.model.jnt_qposadr[cardbox_jnt_adr]
-                cardbox_size = self.sim.model.geom_size[self.sim.model.body_geomadr[cardbox_bid]]
-                cardbox_height = cardbox_size[1] * 2  # Assuming y is the height dimension
-
             if obj_name == self.target_site_name:
-                # Place chosen target object on cardbox (or table if no cardbox) at randomized x, y
-                if 'cardbox' in self.sim.model.body_names:
-                    new_pos = [original_pos[0] + new_x, original_pos[1] + new_y, z_table + cardbox_height]
-                    # Move cardbox together with the object
-                    reset_qpos[cardbox_qpos_adr:cardbox_qpos_adr + 3] = [original_pos[0] + new_x, original_pos[1] + new_y, z_table]
-                else:
-                    new_pos = [original_pos[0] + new_x, original_pos[1] + new_y, z_table]
+                # Raise target object so it sits on top of the cardbox + gap
+                raised_z = z_table + cardbox_height + gap_between_cardbox_and_object
+                new_pos = [original_pos[0] + new_x, original_pos[1] + new_y, raised_z]
+                target_pos_for_cardbox = new_pos.copy()
             else:
-                # Drop all other objects to the floor (or on cardbox if specified)
-                if 'cardbox' in self.sim.model.body_names:
-                    new_pos = [original_pos[0], original_pos[1], z_table + cardbox_height]
-                    # Move cardbox together with the object
-                    reset_qpos[cardbox_qpos_adr:cardbox_qpos_adr + 3] = [original_pos[0], original_pos[1], z_table]
-                else:
-                    new_pos = [original_pos[0], original_pos[1], z_table - 0.3]  # Adjust drop height as needed
+                # Drop all other objects to the floor
+                new_pos = [original_pos[0], original_pos[1], z_table - 0.3]
 
             # Update the object's position
             reset_qpos[object_qpos_adr:object_qpos_adr + 3] = new_pos
@@ -372,17 +359,27 @@ class ReachBaseV0(env_base_1.MujocoEnv):
                 base_qpos_adr = self.sim.model.jnt_qposadr[base_jnt_adr]
 
                 if obj_name == self.target_site_name:
-                    if 'cardbox' in self.sim.model.body_names:
-                        base_pos = [original_pos[0] + new_x, original_pos[1] + new_y, z_table + cardbox_height - 0.01]
-                    else:
-                        base_pos = [original_pos[0] + new_x, original_pos[1] + new_y, z_table - 0.01]
+                    base_pos = [original_pos[0] + new_x, original_pos[1] + new_y, raised_z - 0.01]
                 else:
-                    if 'cardbox' in self.sim.model.body_names:
-                        base_pos = [original_pos[0], original_pos[1], z_table + cardbox_height - 0.01]
-                    else:
-                        base_pos = [original_pos[0], original_pos[1], z_table - 0.3]
+                    base_pos = [original_pos[0], original_pos[1], z_table - 0.3]
                 
                 reset_qpos[base_qpos_adr:base_qpos_adr + 3] = base_pos
+
+        # --- Place the cardbox underneath the target object ---
+        cardbox_bid = self.sim.model.body_name2id('cardbox')
+        cardbox_jnt_adr = self.sim.model.body_jntadr[cardbox_bid]
+        cardbox_qpos_adr = self.sim.model.jnt_qposadr[cardbox_jnt_adr]
+
+        # Its top surface must be (raised_z - gap - cardbox_height)
+        cardbox_z = z_table + cardbox_height / 2  # Assuming cardbox sits flush on the table
+
+        cardbox_pos = [
+            target_pos_for_cardbox[0],
+            target_pos_for_cardbox[1],
+            cardbox_z
+        ]
+
+        reset_qpos[cardbox_qpos_adr:cardbox_qpos_adr + 3] = cardbox_pos
         
         #changing the color of the objects
         for i in range(len(target_sites)):
@@ -418,7 +415,8 @@ class ReachBaseV0(env_base_1.MujocoEnv):
         noise = np.random.normal(loc=mean, scale=std_dev, size=ur10e_qpos.shape)
         reset_qpos[:5] = ur10e_qpos + noise
 
-
+        if 'seed' in kwargs:
+            kwargs.pop('seed')
         obs = super().reset(reset_qpos = reset_qpos, reset_qvel = None, **kwargs)
         #self._last_robot_qpos = self.sim.model.key_qpos[0].copy()
         
@@ -495,6 +493,8 @@ class ReachBaseV0(env_base_1.MujocoEnv):
             self.sim.data.qvel[:] = self.previous_state['qvel']
             if self.previous_state['actuator'] is not None:
                 self.sim.data.ctrl[:] = self.previous_state['actuator']
+            if 'seed' in kwargs:
+                kwargs.pop('seed')
             obs = super().reset(reset_qpos = self.previous_state['qpos'], reset_qvel = None, **kwargs)
         return obs
 

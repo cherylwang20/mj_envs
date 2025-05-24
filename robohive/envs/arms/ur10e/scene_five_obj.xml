@@ -136,6 +136,10 @@
       <geom name="rubberduck_contact2" mesh="d_contact2" class="collision_b"/>
     </body>
 
+    <body name="wall2" pos="0 3.8 2" euler='-0.5 0 0'>
+        <geom type="box" size="5 0.1 3.5" material = 'wallBG'/>
+    </body>
+    
     <body name="cardbox" pos="-0.3 0.42 0.93">
       <inertial pos="0 0 0" mass="0.088" diaginertia="0.0001 0.0001 0.0001" />
       <freejoint/>
