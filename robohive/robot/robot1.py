@@ -757,6 +757,18 @@ class Robot():
     
 
     # Reset the robot
+    def move_to_pos(self, last_qpos, target_pos, itr_steps):
+        delta = target_pos[:self.sim.model.nu] - last_qpos[:self.sim.model.nu]
+        delta /= itr_steps
+        ctrl = last_qpos[:self.sim.model.nu].copy()
+        for i in range(itr_steps):
+            ctrl += delta
+            ctrl[-1] = 1.0 # Fingers set to close position
+            self.sim.data.ctrl[:] = ctrl
+            self.sim.advance(substeps=40, render=False)
+        
+    
+    
     def reset(self,
               reset_pos,
               reset_vel,

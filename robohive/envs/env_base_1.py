@@ -493,7 +493,7 @@ class MujocoEnv(gym.Env, gym.utils.EzPickle, ObsVecDict):
         """
         qpos = self.init_qpos.copy() if reset_qpos is None else reset_qpos
         qvel = self.init_qvel.copy() if reset_qvel is None else reset_qvel
-        self.robot.reset(qpos, qvel, **kwargs)
+        self.robot.reset(qpos, qvel)
         return self.get_obs()
 
 
