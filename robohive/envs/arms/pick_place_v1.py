@@ -51,11 +51,11 @@ class ReachBaseV0(env_base_1.MujocoEnv):
         'qp_robot', 'qv_robot'
     ]
     DEFAULT_RWD_KEYS_AND_WEIGHTS = {
-                "distance": 0.0, 
-                "contact": 0.,
-                'penalty': 1.,
+                "distance": 0, 
+                "contact": 1.,
+                'penalty': 0.5,
                 'sparse': 0,
-                'mask_size': 0.9,
+                'mask_size': 1,
                 "done": 0.,
             }
     
@@ -415,8 +415,6 @@ class ReachBaseV0(env_base_1.MujocoEnv):
         noise = np.random.normal(loc=mean, scale=std_dev, size=ur10e_qpos.shape)
         reset_qpos[:5] = ur10e_qpos + noise
 
-        if 'seed' in kwargs:
-            kwargs.pop('seed')
         obs = super().reset(reset_qpos = reset_qpos, reset_qvel = None, **kwargs)
         #self._last_robot_qpos = self.sim.model.key_qpos[0].copy()
         
@@ -428,7 +426,7 @@ class ReachBaseV0(env_base_1.MujocoEnv):
         self.r = math.sqrt((rx - self.target_x) ** 2 + (ry - self.target_y) ** 2)
         
         self.final_image = np.ones((self.IMAGE_HEIGHT, self.IMAGE_WIDTH, self.channel), dtype=np.uint8)
-        return {'image': self.final_image, 'vector': obs}
+        return {'image': self.final_image, 'vector': obs}, {}
     
 
     def get_observation(self, show=True):
@@ -493,8 +491,6 @@ class ReachBaseV0(env_base_1.MujocoEnv):
             self.sim.data.qvel[:] = self.previous_state['qvel']
             if self.previous_state['actuator'] is not None:
                 self.sim.data.ctrl[:] = self.previous_state['actuator']
-            if 'seed' in kwargs:
-                kwargs.pop('seed')
             obs = super().reset(reset_qpos = self.previous_state['qpos'], reset_qvel = None, **kwargs)
         return obs
 
@@ -554,7 +550,7 @@ class ReachBaseV0(env_base_1.MujocoEnv):
         else:
             super().render(mode)
     
-    def get_image_data(self, show=False, camera="end_effector_cam", width= 212, height= 120):
+    def get_image_data(self, show = False, camera="end_effector_cam", width= 212, height= 120):
         """
         Returns the RGB and depth images of the provided camera.
 
@@ -597,7 +593,13 @@ class ReachBaseV0(env_base_1.MujocoEnv):
         
         half_side = int(max(self.r, 2))
         
-        cv.rectangle(mask, (x - half_side, y - half_side), (x + half_side, y + half_side), 255, thickness=-1)
+        cv.rectangle(
+            mask,
+            (int(x - half_side), int(y - half_side)),
+            (int(x + half_side), int(y + half_side)),
+            255,
+            thickness=-1
+        )
 
         self.mask_out = mask
         if self.channel == 1:
