@@ -114,7 +114,11 @@ class ReachBaseV0(env_base_1.MujocoEnv):
         self.MERGE = kwargs['MERGE']
         self.fp = kwargs['fs']
         self._setup_camera()
-        self.merge_images = np.load('/home/cheryl16/projects/def-durandau/RL-Chemist/resized_images.npy')
+        path  = os.getcwd()
+        if self.MERGE:
+            self.merge_images = np.load(path + '/background/resized_images.npy')
+        else:
+            self.merge_images = None
 
         self.current_image = np.ones((image_width, image_height, self.channel), dtype=np.uint8)
         self.object_image = np.ones((image_width, image_height, 3), dtype=np.uint8)

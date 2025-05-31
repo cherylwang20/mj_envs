@@ -9,10 +9,10 @@ import collections
 import gym
 import numpy as np
 
-from robohive.envs import env_base_UR
+from robohive.envs import env_base_1
 
 
-class ReachBaseV0(env_base_UR.MujocoEnv):
+class ReachBaseV0(env_base_1.MujocoEnv):
 
     DEFAULT_OBS_KEYS = [
         'qp_robot', 'qv_robot','reach_err'
