@@ -4,13 +4,13 @@
     branch = robohive
 [submodule "robohive/simhive/furniture_sim"]
 	path = robohive/simhive/furniture_sim
-	url = https://github.com/vikashplus/furniture_sim.git
+	url = https://github.com/cherylwang20/furniture_sim.git
 [submodule "robohive/simhive/franka_sim"]
 	path = robohive/simhive/franka_sim
 	url = https://github.com/vikashplus/franka_sim.git
 [submodule "robohive/simhive/scene_sim"]
 	path = robohive/simhive/scene_sim
-	url = https://github.com/vikashplus/scene_sim.git
+	url = https://github.com/cherylwang20/scene_sim.git
 [submodule "robohive/simhive/sawyer_sim"]
 	path = robohive/simhive/sawyer_sim
 	url = https://github.com/vikashplus/sawyer_sim.git

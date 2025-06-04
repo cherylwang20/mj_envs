@@ -5,14 +5,14 @@ Source  :: https://github.com/vikashplus/robohive
 License :: Under Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.
 ================================================= """
 
-import gym
+import gymnasium as gym
 import numpy as np
 import os
 import time as timer
 
 from robohive.envs.obs_vec_dict import ObsVecDict
 from robohive.utils import tensor_utils
-from robohive.robot.robot import Robot
+from robohive.robot.robot1 import Robot
 from robohive.utils.prompt_utils import prompt, Prompt
 import skvideo.io
 from sys import platform
@@ -136,7 +136,13 @@ class MujocoEnv(gym.Env, gym.utils.EzPickle, ObsVecDict):
         # Question: Should we replace above with following? Its specially helpful for hardware as it forces a env reset before continuing, without which the hardware will make a big jump from its position to the position asked by step.
         # observation = self.reset()
         assert not done, "Check initialization. Simulation starts in a done state."
-        self.observation_space = gym.spaces.Box(obs_range[0]*np.ones(observation.size), obs_range[1]*np.ones(observation.size), dtype=np.float32)
+        self.observation_space = gym.spaces.Dict({
+            'image': gym.spaces.Box(low=0, high=255, shape=(224, 224, 6), dtype=np.float32),  # Use np.float32 here
+            'vector': gym.spaces.Box(obs_range[0]*np.ones(15), obs_range[1]*np.ones(15), dtype=np.float32)  # Ensure consistency in dtype usage
+        })
+        
+        #self.observation_space = gym.spaces.Box(obs_range[0]*np.ones(observation.size), obs_range[1]*np.ones(observation.size), dtype=np.float32)
+
         return
 
 
@@ -258,14 +264,14 @@ class MujocoEnv(gym.Env, gym.utils.EzPickle, ObsVecDict):
         """
         a = np.clip(a, self.action_space.low, self.action_space.high)
         self.last_ctrl = self.robot.step(ctrl_desired=a,
-                                        ctrl_normalized=self.normalize_act,
-                                        step_duration=self.dt,
-                                        realTimeSim=self.mujoco_render_frames,
+                                        #ctrl_normalized=self.normalize_act,
+                                        dt=self.dt,
+                                        #realTimeSim=self.mujoco_render_frames,
                                         render_cbk=self.mj_render if self.mujoco_render_frames else None)
         return self.forward(**kwargs)
 
 
-    def forward(self, **kwargs):
+    def forward(self, image, **kwargs):
         """
         Forward propagate env to recover env details
         Returns current obs(t), rwd(t), done(t), info(t)
@@ -288,10 +294,13 @@ class MujocoEnv(gym.Env, gym.utils.EzPickle, ObsVecDict):
         env_info = self.get_env_infos()
 
         # returns obs(t+1), rwd(t+1), done(t+1), info(t+1)
+        #print(image.size)
+        obs = {'image': image.reshape((224, 224, 6)), 'vector': obs}
+
         return obs, env_info['rwd_'+self.rwd_mode], bool(env_info['done']), env_info
 
 
-    def get_obs(self, update_proprioception=False, update_exteroception=False):
+    def get_obs(self, image = None, update_proprioception=False, update_exteroception=False):
         """
         Get state based observations from the environemnt.
         Uses robot to get sensors, reconstructs the sim and recovers the sensors.

@@ -680,16 +680,16 @@ class Robot():
             ctrl_normalized:    is the ctrl normalized to [-1, 1]
             realTimeSim:        run simulate real world speed via sim
         """
-        control = (self.robot_vel_bound[:7, 1]+self.robot_vel_bound[:7, 0])/2.0 + \
+        control_v = (self.robot_vel_bound[:7, 1]+self.robot_vel_bound[:7, 0])/2.0 + \
                                         ctrl_desired*(self.robot_vel_bound[:7, 1]-self.robot_vel_bound[:7, 0])/2.0
-        control = last_qpos[:7] + control*dt
+        control = last_qpos[:7] + control_v*dt
         ctrl_feasible = np.clip(control, self.robot_pos_bound[:7, 0], self.robot_pos_bound[:7, 1])
 
         n_frames=int(dt/self.sim.step_duration)
         self.sim.data.ctrl[:] = ctrl_feasible
         self.sim.advance(substeps=n_frames, render=(render_cbk!=None))
 
-        return ctrl_feasible
+        return ctrl_feasible, control_v
     
     def _ctrl_velocity_limits(self, ctrl_velocity: np.ndarray, last_robot_qpos, dt):
         """Enforce velocity limits and estimate joint position control input (to achieve the desired joint velocity).
@@ -757,6 +757,18 @@ class Robot():
     
 
     # Reset the robot
+    def move_to_pos(self, last_qpos, target_pos, itr_steps):
+        delta = target_pos[:self.sim.model.nu] - last_qpos[:self.sim.model.nu]
+        delta /= itr_steps
+        ctrl = last_qpos[:self.sim.model.nu].copy()
+        for i in range(itr_steps):
+            ctrl += delta
+            ctrl[-1] = 1.0 # Fingers set to close position
+            self.sim.data.ctrl[:] = ctrl
+            self.sim.advance(substeps=40, render=False)
+        
+    
+    
     def reset(self,
               reset_pos,
               reset_vel,

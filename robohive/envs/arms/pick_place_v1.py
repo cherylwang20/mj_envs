@@ -5,28 +5,60 @@ Source  :: https://github.com/vikashplus/robohive
 License :: Under Apache License, Version 2.0 (the "License"); you may not use this file except in compliance with the License. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0 Unless required by applicable law or agreed to in writing, software distributed under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License for the specific language governing permissions and limitations under the License.
 ================================================= """
 
+
+"""
+We are using this as a testing ground for reaching with visual inputs. 
+"""
+
+import warnings
+import kornia.augmentation as KAug
+import kornia.enhance as KEnhance
+from PIL import Image
+# Suppress all deprecation warnings
+warnings.simplefilter("ignore", DeprecationWarning)
+
 import collections
-import gym
+import kornia
+#import mujoco as mp
+import os
+from torchvision.ops import box_convert
+from scipy.spatial.transform import Rotation as R
+import torch
+import random
+# Set environment variables
+import gymnasium as gym
 import numpy as np
+import cv2 as cv
+import os
+import math
+import matplotlib.pyplot as plt
+import copy
+from robohive.physics.sim_scene import SimScene
+#import dm_control.mujoco as dm_mujoco
 
-from robohive.envs import env_base
-from robohive.utils.quat_math import euler2quat, mat2euler
+from robohive.envs import env_base_1
+from robohive.utils.quat_math import mat2euler, euler2quat
 
-class PickPlaceV0(env_base.MujocoEnv):
+from robohive.envs.arms.python_api_2 import BodyIdInfo, arm_control, get_touching_objects, ObjLabels
+
+
+class ReachBaseV0(env_base_1.MujocoEnv):
 
     DEFAULT_OBS_KEYS = [
-        'qp_robot', 'qp_object', 'qv_robot', 'qv_object', 'object_err', 'target_err'
+        'qp_robot', 'qv_robot'
     ]
     DEFAULT_PROPRIO_KEYS = [
-        'qp_robot', 'qp_object', 'qv_robot', 'qv_object'
+        'qp_robot', 'qv_robot'
     ]
     DEFAULT_RWD_KEYS_AND_WEIGHTS = {
-        "object_dist": -1.0,
-        "target_dist": -1.0,
-        "bonus": 4.0,
-        "penalty": -50,
-    }
-
+                "distance": 0, 
+                "contact": 1.,
+                'penalty': 0.5,
+                'sparse': 0,
+                'mask_size': 1,
+                "done": 0.,
+            }
+    
     def __init__(self, model_path, obsd_model_path=None, seed=None, **kwargs):
 
         # EzPickle.__init__(**locals()) is capturing the input dictionary of the init method of this class.
@@ -42,109 +74,747 @@ class PickPlaceV0(env_base.MujocoEnv):
         # creating the sim / sim_obsd instances. Next we run through "setup"  which relies on sim / sim_obsd
         # created in __init__ to complete the setup.
         super().__init__(model_path=model_path, obsd_model_path=obsd_model_path, seed=seed)
-
         self._setup(**kwargs)
 
 
     def _setup(self,
-               robot_ndof,
                robot_site_name,
-               object_site_name,
                target_site_name,
+               goal_site_name,
                target_xyz_range,
-               frame_skip=4 ,#40,
-               reward_mode="dense",
+               image_width = 212,
+               image_height= 120,
+               obj_xyz_range = None,
+               frame_skip = 20,
+               reward_mode = "dense",
                obs_keys=DEFAULT_OBS_KEYS,
+               proprio_keys=DEFAULT_PROPRIO_KEYS,
                weighted_reward_keys=DEFAULT_RWD_KEYS_AND_WEIGHTS,
-               randomize=False,
-               geom_sizes={'high':[.05, .05, .05], 'low':[.2, 0.2, 0.2]},
                **kwargs,
         ):
 
-        self.robot_ndof = robot_ndof
         # ids
-        self.grasp_sid = self.sim.model.site_name2id(robot_site_name)
-        self.object_sid = self.sim.model.site_name2id(object_site_name)
-        self.target_sid = self.sim.model.site_name2id(target_site_name)
+        self.target_site_name = target_site_name
+        self.grasp_sid = self.sim.model.site_name2id(robot_site_name) #robot part name
+        self.target_sid = self.sim.model.site_name2id(target_site_name) #object name
+        #self.goal_sid = self.sim.model.site_name2id(goal_site_name) #final location
+        if obj_xyz_range is not None:
+            self.obj_xyz_range = obj_xyz_range #random re-initialized object location
+        self.object_bid = self.sim.model.body_name2id(target_site_name)
         self.target_xyz_range = target_xyz_range
-        self.randomize = randomize
-        self.geom_sizes = geom_sizes
+        self.IMAGE_WIDTH = image_width
+        self.IMAGE_HEIGHT = image_height
+        self.grasping_steps_left = 0
+        self.grasp_attempt = 0
+        self.obj_init_z = self.sim.data.site_xpos[self.grasp_sid][-1]
+        self.fixed_positions = None
+        self.cam_init = True
+        #self.channel = 1
+        self.channel = kwargs['channel']
+        self.MERGE = kwargs['MERGE']
+        self.fp = kwargs['fs']
+        self._setup_camera()
+        path  = os.getcwd()
+        if self.MERGE:
+            self.merge_images = np.load(path + '/background/resized_images.npy')
+        else:
+            self.merge_images = None
+
+        self.current_image = np.ones((image_width, image_height, self.channel), dtype=np.uint8)
+        self.object_image = np.ones((image_width, image_height, 3), dtype=np.uint8)
+        self.rgb_out = np.ones((image_width, image_height))
+        self.mask_out = np.ones((image_width, image_height))
+
+        ## Touch
+        self.left_touch = False
+        self.left_touch_rewarded = False
+        self.right_touch = False
+        self.right_touch_rewarded = False
+        self.touch_count = 0
+        self.touch_rewards = 0
+        
+        self.obj_scale_change = [0.05, 0.05, 0.05]
+        self.obj_mass_change = (-0.050, 0.050)
+        self.obj_friction_change = (0.1, 0.001, 0.00002)
+        self.vel_action = [0]*6
+    
+        self.pixel_perc = 0
+        self.total_pix = 0
+        self.touch_success = 0
+        self._min_dist = 10000
+        self.single_touch = 0
+        self.target_x, self.target_y = 0, 0
+        self.target_r = 0
+        self.r = 2
+        self.camera_matrix = None
+        self.depth = 0
+        self.eval = False
+        #self.frame_skip = random.randint(80, 100)
+        #np.random.seed(47005)
+        #random.seed(47005)
+        
+
+        if 'eval_mode' in kwargs:
+            self.eval_mode = kwargs['eval_mode']
+        else: 
+            self.eval_mode = False
+
+
+
+        #self._last_robot_qpos = self.sim.model.key_qpos[0].copy()
 
         super()._setup(obs_keys=obs_keys,
-                       weighted_reward_keys=weighted_reward_keys,
+                       proprio_keys=proprio_keys,
                        reward_mode=reward_mode,
                        frame_skip=frame_skip,
+                       weighted_reward_keys=weighted_reward_keys,
                        **kwargs)
-        self.viewer_setup(distance=1.25, azimuth=-90, elevation=-20)
-        self.init_qpos = self.sim.model.key_qpos[0]
+        self.init_qpos[:] = self.sim.model.key_qpos[3].copy()
 
 
     def get_obs_dict(self, sim):
         obs_dict = {}
         obs_dict['time'] = np.array([self.sim.data.time])
-        obs_dict['qp_robot'] = sim.data.qpos[:self.robot_ndof].copy()
-        obs_dict['qv_robot'] = sim.data.qvel[:self.robot_ndof].copy()
-        obs_dict['qp_object'] = sim.data.qpos[self.robot_ndof:].copy()
-        obs_dict['qv_object'] = sim.data.qvel[self.robot_ndof:].copy()
+        obs_dict['qp_robot'] = sim.data.qpos[:7].copy() + np.random.normal(loc=0, scale=0.1, size=7)
+        obs_dict['qv_robot'] = self.vel_action.copy() + np.random.normal(loc=0, scale=0.1, size=7)
+        #print('gripper velocity & position', obs_dict['qp_robot'][-1], obs_dict['qv_robot'][-1])
         obs_dict['xmat_pinch'] = mat2euler(np.reshape(self.sim.data.site_xmat[self.grasp_sid], (3, 3)))
-        obs_dict['claw_ori_err'] = obs_dict['xmat_pinch'] - np.array([np.pi, 0, -np.pi/2])
-        obs_dict['obj_ori_err'] = mat2euler(np.reshape(self.sim.data.site_xmat[self.target_sid], (3, 3)))- np.array([0, 0, -0])
-        obs_dict['object_err'] = sim.data.site_xpos[self.object_sid]-sim.data.site_xpos[self.grasp_sid]
-        obs_dict['target_err'] = sim.data.site_xpos[self.target_sid]-sim.data.site_xpos[self.object_sid]
+        #obs_dict['obj_ori'] = mat2euler(np.reshape(self.sim.data.site_xmat[self.target_sid], (3, 3)))
+        #obs_dict['obj_ori_err'] =  obs_dict['obj_ori'] - np.array([np.pi/2, 0, 0])
+        obs_dict['claw_ori_err'] = obs_dict['xmat_pinch'] - np.array([-np.pi, 0, -np.pi/2])
+        obs_dict['reach_err'] = sim.data.site_xpos[self.target_sid]-sim.data.site_xpos[self.grasp_sid]
+        #obs_dict['target_err'] = sim.data.site_xpos[self.goal_sid]-sim.data.site_xpos[self.grasp_sid]
+        #obs_dict['pixel'] = np.array([self.pixel_perc])
+        obs_dict['power_cost'] = sim.data.qvel.copy()*sim.data.qfrc_actuator.copy()
+        obs_dict['total_pix'] = np.array([self.total_pix/100]) 
+        self.current_observation = self.get_observation(show=True)
+
+        this_model = sim.model
+        id_info = BodyIdInfo(this_model)
+        this_data = sim.data
+
+        touching_objects = set(get_touching_objects(this_model, this_data, id_info, self.target_site_name))
+
+        obs_vec = self._obj_label_to_obs(touching_objects)
+        obs_dict["touching_body"] = obs_vec
+
+        #self.check_contact()
         return obs_dict
 
+    def _obj_label_to_obs(self, touching_body):
+        # Function to convert touching body set to an binary observation vector
+        # order follows the definition in python_api file
+        obs_vec = np.array([0, 0, 0])
+        self.left_touch = False
+        self.right_touch = False
+        for i in touching_body:
+            if i == ObjLabels.LEFT_GRIP:
+                obs_vec[0] += 1
+                self.left_touch = True
+            elif i == ObjLabels.RIGHT_GRIP:
+                obs_vec[1] += 1
+                self.right_touch = True
+            else:
+                obs_vec[2] += 1
 
+        return obs_vec
+
+    def calculate_img_reward(self, perc):        
+        return (2.0/(1+np.exp(-perc*10.0))) - 1.0 
+    
+    
     def get_reward_dict(self, obs_dict):
-        object_dist = np.linalg.norm(obs_dict['object_err'], axis=-1)
-        target_dist = np.linalg.norm(obs_dict['target_err'], axis=-1)
-        claw_rot_err = np.linalg.norm(obs_dict['claw_ori_err'], axis=-1)[0]
-        obj_rot_err = np.linalg.norm(obs_dict['obj_ori_err'], axis=-1)[0]
-        far_th = 2.25
-
+        self.distance = np.linalg.norm(obs_dict['reach_err'], axis=-1)[0]
+        
+        if self.distance < self._min_dist:
+            self._min_dist = self.distance
+        
+        mask_size_reward = np.array([self.calculate_img_reward(self.pixel_perc / 100)])
+        contact = np.array([np.sum(obs_dict["touching_body"][0][0][:2])])
+        
+        done_1 = np.full((1,), False, dtype=np.bool_)
+        done_2 = False
+                
         rwd_dict = collections.OrderedDict((
-            # Optional Keys
-            ('object_dist',   object_dist),
-            ('target_dist',   target_dist),
-            ('claw_ori',  2.*np.exp(-claw_rot_err[0])**2),
-            ('obj_ori',   -(obj_rot_err[0])**2), 
-            ('bonus',   (object_dist<.026)+ (target_dist<.1) + (target_dist<.05)),
-            ('penalty', (target_dist>far_th)),
-            # Must keys
-            ('sparse',  -1.0*target_dist),
-            ('solved',  target_dist<.025),
-            ('done',    target_dist<.025), #object_dist > far_th
-        ))
-        rwd_dict['dense'] = np.sum([wt*rwd_dict[key] for key, wt in self.rwd_keys_wt.items()], axis=0)
+            ('distance',  self.distance),
+            ('contact', contact),
+            ('penalty', np.array([-1])),  
+            ('sparse',  np.array([0])),
+            ('solved',  np.array([0])),
+            ('mask_size',  mask_size_reward),
+            ('done', done_1),  
+        )) 
+
+        if not self.eval_mode:
+            rwd_dict['dense'] = np.sum([wt*rwd_dict[key] for key, wt in self.rwd_keys_wt.items()], axis=0)
+            
+            if self.left_touch and not self.left_touch_rewarded:
+                self.left_touch_rewarded = True
+                # rwd_dict['dense'] += 0.5
+                print(f'{self.target_site_name} Left Touch!')
+            if self.right_touch and not self.right_touch_rewarded:
+                self.right_touch_rewarded = True
+                # rwd_dict['dense'] += 0.5
+                print(f'{self.target_site_name} Right Touch!')
+        else:
+            rwd_dict['dense'] = 1.0 if done_2 else 0
+            rwd_dict['done'] = contact == 2
+
+        if self.left_touch and self.right_touch:
+            self.touch_rewards += 0.5
+            if self.touch_rewards <= 2.6:
+                rwd_dict['dense'] += 0.5
+            self.touch_count += 1
+            if self.touch_count == 5:
+                last_pos = self.sim.data.qpos[:self.sim.model.nu].copy()
+                reset_qpos = self.sim.model.key_qpos[0].copy()
+                self.robot.move_to_pos(last_pos, reset_qpos, 100)
+                
+                this_model = self.sim.model
+                id_info = BodyIdInfo(this_model)
+                this_data = self.sim.data
+                touching_objects = set(get_touching_objects(this_model, this_data, id_info, self.target_site_name))
+                self._obj_label_to_obs(touching_objects)
+                
+                if self.left_touch and self.right_touch:
+                    rwd_dict['done'] = np.full((1,), True, dtype=np.bool_)
+                    rwd_dict['dense'] += 10.0
+                    last_pos = self.sim.data.qpos[:self.sim.model.nu].copy()
+                    print(f'!!!! {self.target_site_name} Touch Down !!!!   ---   POS: {last_pos}\n')
+                else:
+                    rwd_dict['done'] = np.full((1,), True, dtype=np.bool_)
+                    last_pos = self.sim.data.qpos[:self.sim.model.nu].copy()
+                    print(f'POS: {last_pos}\n')
+
+        else:
+            self.touch_count = 0
+
         return rwd_dict
+    
+    def reset(self, reset_qpos=None, reset_qvel=None, **kwargs):
+        self.grasping_steps_left = 0
+        self.grasp_attempt = 0
+        self.touch_success = 0
+        self.single_touch = 0
 
-    def reset(self):
+        #randomly choose between the five objects; color it green, and the rest as white. 
+        if self.eval:
+            target_sites = ['object_6', 'object_7', 'object_8', 'object_4', 'object_1', 'object_2']
+            target_names = ['banana', 'alarm clock', 'cup', 'beaker', 'apple', 'block']
+            number = np.random.randint(0, 3)
+        else:
+            target_sites = ['object_1', 'object_2', 'object_3', 'object_4', 'object_5']
+            target_names = ['apple', 'block', 'donut', 'beaker', 'rubber duck']
+            number = np.random.randint(0, 5)
+        self.target_site_name = target_sites[number]
+        print(self.target_site_name, target_names[number])
+        self.target_sid = self.sim.model.site_name2id(self.target_site_name)
 
-        if self.randomize:
-            # target location
-            self.sim.model.site_pos[self.target_sid] = self.np_random.uniform(high=self.target_xyz_range['high'], low=self.target_xyz_range['low'])
-            self.sim_obsd.model.site_pos[self.target_sid] = self.sim.model.site_pos[self.target_sid]
+        # Load object image
+        current_directory = os.getcwd()
+        self.object_image = cv.imread(current_directory + '/mj_envs/robohive/envs/arms/object_image/' + self.target_site_name + '.png', cv.IMREAD_COLOR)
+        self.object_image = cv.cvtColor(self.object_image, cv.COLOR_BGR2RGB)
 
-            # object shapes and locations
-            for body in ["obj0", "obj1", "obj2"]:
-                bid = self.sim.model.body_name2id(body)
-                self.sim.model.body_pos[bid] += self.np_random.uniform(low=[-.010, -.010, -.010], high=[-.010, -.010, -.010])# random pos
-                self.sim.model.body_quat[bid] = euler2quat(self.np_random.uniform(low=(-np.pi/2, -np.pi/2, -np.pi/2), high=(np.pi/2, np.pi/2, np.pi/2)) ) # random quat
+        # Define object position ranges on the table
+        obj_xyz_ranges = {
+            'object': {'low': [-0.05, -0.05, 0], 'high': [0.1, 0.1, 0]},
+        }
 
-                for gid in range(self.sim.model.body_geomnum[bid]):
-                    gid+=self.sim.model.body_geomadr[bid]
-                    self.sim.model.geom_type[gid]=self.np_random.randint(low=2, high=7) # random shape
-                    self.sim.model.geom_size[gid]=self.np_random.uniform(low=self.geom_sizes['low'], high=self.geom_sizes['high']) # random size
-                    self.sim.model.geom_pos[gid]=self.np_random.uniform(low=-1*self.sim.model.geom_size[gid], high=self.sim.model.geom_size[gid]) # random pos
-                    self.sim.model.geom_quat[gid]=euler2quat(self.np_random.uniform(low=(-np.pi/2, -np.pi/2, -np.pi/2), high=(np.pi/2, np.pi/2, np.pi/2)) ) # random quat
-                    self.sim.model.geom_rgba[gid]=self.np_random.uniform(low=[.2, .2, .2, 1], high=[.9, .9, .9, 1]) # random color
-            self.sim.forward()
+        # Generate random table position (x, y)
+        new_x, new_y = np.random.uniform(
+            low=[obj_xyz_ranges['object']['low'][0], obj_xyz_ranges['object']['low'][1]],
+            high=[obj_xyz_ranges['object']['high'][0], obj_xyz_ranges['object']['high'][1]],
+            size=2
+        )
 
-        obs = super().reset(self.init_qpos, self.init_qvel)
+        # Copy initial qpos
+        reset_qpos = self.sim.model.key_qpos[3].copy()
+
+        # Loop through all objects
+        cardbox_height = 0.055  # e.g., 3 cm height
+        gap_between_cardbox_and_object = 0.05  # e.g., 5 mm gap
+        min_spacing_above_table = 0.01  # clearance between cardbox and table
+
+        for obj_name in target_sites:
+            objec_bid = self.sim.model.body_name2id(obj_name)
+            object_jnt_adr = self.sim.model.body_jntadr[objec_bid]
+            object_qpos_adr = self.sim.model.jnt_qposadr[object_jnt_adr]
+
+            # Fetch original z height to preserve table level
+            original_pos = reset_qpos[object_qpos_adr:object_qpos_adr + 3].copy()
+            z_table = original_pos[2]
+
+            if obj_name == self.target_site_name:
+                # Raise target object so it sits on top of the cardbox + gap
+                raised_z = z_table + cardbox_height + gap_between_cardbox_and_object
+                new_pos = [original_pos[0] + new_x, original_pos[1] + new_y, raised_z]
+                target_pos_for_cardbox = new_pos.copy()
+            else:
+                # Drop all other objects to the floor
+                new_pos = [original_pos[0], original_pos[1], z_table - 0.3]
+
+            # Update the object's position
+            reset_qpos[object_qpos_adr:object_qpos_adr + 3] = new_pos
+
+            # Handle special linked base if needed (e.g., 'object_4' and 'base_rbf')
+            if obj_name == 'object_4':
+                base_bid = self.sim.model.body_name2id('base_rbf')
+                base_jnt_adr = self.sim.model.body_jntadr[base_bid]
+                base_qpos_adr = self.sim.model.jnt_qposadr[base_jnt_adr]
+
+                if obj_name == self.target_site_name:
+                    base_pos = [original_pos[0] + new_x, original_pos[1] + new_y, raised_z - 0.01]
+                else:
+                    base_pos = [original_pos[0], original_pos[1], z_table - 0.3]
+                
+                reset_qpos[base_qpos_adr:base_qpos_adr + 3] = base_pos
+
+        # --- Place the cardbox underneath the target object ---
+        cardbox_bid = self.sim.model.body_name2id('cardbox')
+        cardbox_jnt_adr = self.sim.model.body_jntadr[cardbox_bid]
+        cardbox_qpos_adr = self.sim.model.jnt_qposadr[cardbox_jnt_adr]
+
+        # Its top surface must be (raised_z - gap - cardbox_height)
+        cardbox_z = z_table + cardbox_height / 2  # Assuming cardbox sits flush on the table
+
+        cardbox_pos = [
+            target_pos_for_cardbox[0],
+            target_pos_for_cardbox[1],
+            cardbox_z
+        ]
+
+        reset_qpos[cardbox_qpos_adr:cardbox_qpos_adr + 3] = cardbox_pos
+        
+        #changing the color of the objects
+        for i in range(len(target_sites)):
+            objec_bid = self.sim.model.body_name2id(target_sites[i])
+            #self.object_augment(objec_bid, target_names[i])
+        
+            object_gid = self.sim.model.geom_name2id(target_sites[i])  # Get the geometry ID
+
+            # Access the current RGBA values for the geometry
+            current_rgba = self.sim.model.geom_rgba[object_gid]
+
+            # Create a small random change for RGB, leaving alpha unchanged
+            random_change = np.random.uniform(-0.05, 0.05, size=3)  # Small random change for RGB
+            new_rgb = np.clip(current_rgba[:3] + random_change, 0, 1)  # Adjust RGB and ensure values are within [0, 1]
+
+            # Update the RGBA values in the simulation
+            self.sim.model.geom_rgba[object_gid, :3] = new_rgb
+        
+        ### here we want to augment the lighting in the scene
+        '''
+        light_id = 1
+        
+        self.sim.model.light_diffuse[light_id] = np.random.rand(3)
+        self.sim.model.light_ambient[light_id] = np.random.rand(3)
+        self.sim.model.light_specular[light_id] = np.random.rand(3)
+        '''
+
+        #we change the initial qpos of the ur10e as well. 
+        ur10e_qpos = self.sim.model.key_qpos[3][:5]
+
+        mean, std_dev = 0, .05
+        # Generate Gaussian noise
+        noise = np.random.normal(loc=mean, scale=std_dev, size=ur10e_qpos.shape)
+        reset_qpos[:5] = ur10e_qpos + noise
+
+        obs = super().reset(reset_qpos = reset_qpos, reset_qvel = None, **kwargs)
+        #self._last_robot_qpos = self.sim.model.key_qpos[0].copy()
+        
+        site_pos = self.sim.data.site_xpos[self.target_sid]
+        camera_matrix = self.compute_camera_matrix()
+        self.target_x, self.target_y  = self.world_2_pixel(site_pos, camera_matrix) 
+        site_pos[0] += 0.04
+        rx, ry  = self.world_2_pixel(site_pos, camera_matrix) 
+        self.r = math.sqrt((rx - self.target_x) ** 2 + (ry - self.target_y) ** 2)
+        
+        self.final_image = np.ones((self.IMAGE_HEIGHT, self.IMAGE_WIDTH, self.channel), dtype=np.uint8)
+        return {'image': self.final_image, 'vector': obs}, {}
+    
+
+    def get_observation(self, show=True):
+        """
+        Uses the controllers get_image_data method to return an top-down image (as a np-array).
+
+        Args:
+            show: If True, displays the observation in a cv2 window.
+        """
+
+        rgb, depth = self.get_image_data(
+            width=self.IMAGE_WIDTH, height=self.IMAGE_HEIGHT, show=show
+        )
+        #depth = self.depth_2_meters(depth) #we don't need this, already in meters
+        site_pos = self.sim.data.site_xpos[self.target_sid]
+        camera_matrix = self.compute_camera_matrix()
+        self.target_x, self.target_y = self.world_2_pixel(site_pos, camera_matrix) 
+        site_pos[0] += 0.04
+        rx, ry  = self.world_2_pixel(site_pos, camera_matrix) 
+        self.r = math.sqrt((rx - self.target_x) ** 2 + (ry - self.target_y) ** 2)
+        #pixel_x, pixel_y = self.world_2_pixel(site_pos)
+
+        observation = {}
+        observation["rgb"] = rgb
+        #observation["depth"] =   np.array([depth[pixel_y][pixel_x]]) #np.array([ 2.701]) #
+        #print(np.array([depth[pixel_y][pixel_x]]), np.array([depth[pixel_y][224 - pixel_x]]))
+        #observation["pixel_coords"] = [pixel_x, pixel_y]
+        #print('pixel coords,', pixel_x, pixel_y)
+
+        return observation
+
+    #setting a boundary of virtual box such that the arm will not accidentally
+    def check_collision(self):
+        """ Check if any joint is out of the defined boundary """
+        x_min, x_max = -1.5, 1.5
+        y_min, y_max = -1.7, 1.5
+        z_min, z_max = 0.85, 2.23
+        for i in range(1, 13):
+            joint_frame_id = self.sim.model.jnt_bodyid[i]
+            joint_pos = self.sim.data.xpos[joint_frame_id]
+            if not (x_min <= joint_pos[0] <= x_max and 
+                    y_min <= joint_pos[1] <= y_max and 
+                    z_min <= joint_pos[2] <= z_max):
+                #print(joint_pos)
+                #print(f"Collision at joint {i}")
+                self.rwd_dict['dense'] -= 1
+                return True
+        return False
+    
+    def save_state(self):
+        """ Save the current simulation state """
+        self.previous_state = {
+            'qpos': np.copy(self.sim.data.qpos),
+            'qvel': np.copy(self.sim.data.qvel),
+            'actuator': np.copy(self.sim.data.ctrl) if hasattr(self.sim.data, 'ctrl') else None
+        }
+    
+    def restore_state(self, **kwargs):
+        """ Restore the simulation state from self.previous_state """
+        if self.previous_state:
+            self.sim.data.qpos[:] = self.previous_state['qpos']
+            self.sim.data.qvel[:] = self.previous_state['qvel']
+            if self.previous_state['actuator'] is not None:
+                self.sim.data.ctrl[:] = self.previous_state['actuator']
+            obs = super().reset(reset_qpos = self.previous_state['qpos'], reset_qvel = None, **kwargs)
         return obs
 
-    # def viewer_setup(self):
-    #     self.sim.renderer.set_free_camera_settings(
-    #             distance=1.25,
-    #             azimuth=-90,
-    #             elevation=-20,
-    #     )
+    def step(self, a, **kwargs):
+        """
+        Step the simulation forward (t => t+1)
+        Uses robot interface to safely step the forward respecting pos/ vel limits
+        Accepts a(t) returns obs(t+1), rwd(t+1), done(t+1), info(t+1)
+        change control method here if needed 
+        """
+        self.save_state()
+
+        if self.touch_success >= 5:
+            print('hard-coded')
+            self.fixed_positions = self.sim.data.qpos[:7].copy()
+            self.fixed_positions[-1] = 1
+            a = [0, 0, 0, 0, 0, 0, 1]
+            if self.touch_success >= 30:
+                a = [0, -0.5, -0.5, 0, 0, 0, 1]
+            self.rwd_dict['dense'] += 1
+            self.last_ctrl = self.robot.step(ctrl_desired=a,
+                                        last_qpos = self.fixed_positions,
+                                        dt = self.dt,
+                                        render_cbk=self.mj_render if self.mujoco_render_frames else None)
+        else:
+            a = np.clip(a, self.action_space.low, self.action_space.high)
+            a[-1] = (a[-1] > 0).astype(int) * 2 - 1 
+            self.fixed_positions = None
+            self.last_ctrl, self.vel_action = self.robot.step(ctrl_desired=a,
+                                        last_qpos = self.sim.data.qpos[:7].copy(),
+                                        dt = self.dt,
+                                        render_cbk=self.mj_render if self.mujoco_render_frames else None)
+        #self.do_simulation(ctrl_feasible, self.frame_skip)
+        
+        
+        if self.check_collision():
+            #print("Collision detected, reverting action")
+            self.rwd_dict['dense'] -= 1
+            self.restore_state()
+    
+        self.object_image_normalized = self.object_image / 255
+        self.final_image = self.current_image
+
+        return self.forward(self.final_image, self.channel, **kwargs)
+    
+    def set_color(self, color):
+            self.color = color
+    
+    def render(self, mode='rgb_array'):
+        # Your implementation here, which should return an RGB array if mode is 'rgb_array'
+        mode='rgb_array'
+        if mode == 'rgb_array':
+            rgb, depth = copy.deepcopy(
+            self.sim.renderer.render_offscreen(width=self.IMAGE_WIDTH, height=self.IMAGE_HEIGHT, camera_id='end_effector_cam', depth = True)
+            )
+            return rgb
+        else:
+            super().render(mode)
+    
+    def get_image_data(self, show = False, camera="end_effector_cam", width= 212, height= 120):
+        """
+        Returns the RGB and depth images of the provided camera.
+
+        Args:
+            show: If True displays the images for five seconds or until a key is pressed.
+            camera: String specifying the name of the camera to use.
+        """
+        #rgb_out =  self.sim.renderer.render_offscreen(width=800, height=800, camera_id='ft_cam')
+        #self.sim.renderer.close()
+
+        # Initialize the simulator
+        rgb, depth = copy.deepcopy(
+            self.sim.renderer.render_offscreen(height=height,width=width,  camera_id=camera, depth = True)
+        )
+
+        self.rgb_out = rgb
+
+        rgb = cv.cvtColor(rgb, cv.COLOR_BGR2RGB)
+
+        #add augmentation here
+        rgb = torch.from_numpy(rgb).float() / 255.0
+        rgb = rgb.permute(2, 0, 1).unsqueeze(0)
+        rgb = self.augment_image(rgb)
+        if self.MERGE:
+            rgb = self.merge_image(rgb)
+
+        #return the rgb to its original shape
+        if rgb.dim() == 4:
+            rgb = rgb.permute(0, 2, 3, 1)  # (B, C, H, W) to (B, H, W, C)
+            rgb = rgb.squeeze(0)  # Assuming only one image in the batch
+        elif rgb.dim() == 3:
+            rgb = rgb.permute(1, 2, 0)  # (C, H, W) to (H, W, C)
+        
+        rgb = rgb.numpy()
+        if rgb.dtype != np.uint8:
+            rgb = (rgb * 255).astype(np.uint8)
+
+        mask = np.zeros(( self.IMAGE_HEIGHT,  self.IMAGE_WIDTH), dtype=np.uint8)
+        x, y = int(self.target_x), int(self.target_y)
+        
+        half_side = int(max(self.r, 2))
+        
+        cv.rectangle(
+            mask,
+            (int(x - half_side), int(y - half_side)),
+            (int(x + half_side), int(y + half_side)),
+            255,
+            thickness=-1
+        )
+
+        self.mask_out = mask
+        if self.channel == 1:
+            self.current_image = np.expand_dims(mask/255, axis=-1) 
+        elif self.channel == 4:
+            self.current_image = np.concatenate((rgb/255, np.expand_dims(mask/255, axis=-1)), axis=2)
+
+        #define the grasping rectangle
+        x1, x2 = int(self.IMAGE_WIDTH * 0.25), int(self.IMAGE_WIDTH * 0.75)
+        y1, y2 = int(self.IMAGE_HEIGHT * 0.40), int(self.IMAGE_HEIGHT * 0.80)
+
+        cv.rectangle(rgb.copy(), (x1, y1), (x2, y2), (0, 0, 255), thickness=2)
+        cv.rectangle(mask, (x1, y1), (x2, y2), 255, thickness=1)
+
+        roi = mask[y1:y2, x1:x2]
+        white_pixels = np.sum(roi == 255)
+        total_pixels = roi.size
+        self.pixel_perc = (white_pixels / total_pixels) * 100
+        self.total_pix = (np.sum(mask==255)/mask.size) * 100
+
+        return np.array(np.fliplr(np.flipud(rgb))), np.array(np.fliplr(np.flipud(depth)))
+
+    def augment_image(self, rgb):
+        low , high = 0.8, 1.2
+        self.transform = torch.nn.Sequential(
+            KAug.RandomContrast(contrast=(low, high), clip_output=True, p=0.8),
+            KAug.RandomBrightness((low, high)),
+            KAug.RandomSaturation((low, high)), 
+            KAug.RandomGaussianBlur(kernel_size=(5, 5), sigma=(low, high), p=0.5)
+        )
+
+        augmented_rgb = self.transform(rgb)
+
+        return augmented_rgb
+
+    def merge_image(self, rgb, alpha_low = 0.7):
+        tmp_image = random.choice(self.merge_images)
+        tmp_tensor = torch.from_numpy(tmp_image)
+        tmp_tensor = tmp_tensor.permute(2, 0, 1).unsqueeze(0) 
+        alpha = random.uniform(alpha_low, 1)
+        merged_image = kornia.enhance.add_weighted(rgb, alpha, tmp_tensor, 1 - alpha, 1)
+        return merged_image
+    
+    def depth_2_meters(self, depth):
+        """
+        Converts the depth array delivered by MuJoCo (values between 0 and 1) into actual m values.
+
+        Args:
+            depth: The depth array to be converted.
+        """
+        current_directory = os.getcwd()
+        self.model = mp.MjModel.from_xml_path(current_directory + "/mj_envs/robohive/envs/arms/ur10e/scene_chem.xml")
+        extend = self.model.stat.extent
+        near = self.model.vis.map.znear * extend
+        far = self.model.vis.map.zfar * extend
+        return near / (1 - depth * (1 - near / far))
+
+    def pixel_2_world(self, pixel_x, pixel_y, depth, width=212, height=120, camera="end_effector_cam"):
+        """
+        Converts pixel coordinates into world coordinates.
+
+        Args:
+            pixel_x: X-coordinate in pixel space.
+            pixel_y: Y-coordinate in pixel space.
+            depth: Depth value corresponding to the pixel.
+            width: Width of the image (pixel).
+            height: Height of the image (pixel).
+            camera: Name of camera used to obtain the image.
+        """
+
+        if not self.cam_init:
+            self.create_camera_data(width, height, camera)
+
+        # Create coordinate vector
+        pixel_coord = np.array([pixel_x, pixel_y, 1])
+
+        # Apply the intrinsic matrix to get camera space coordinates
+        pos_c = np.linalg.inv(self.cam_matrix) @ pixel_coord
+        pos_c *= -depth  # Apply depth to scale to the actual position in camera space
+
+        # Convert camera space coordinates to world coordinates
+        pos_w = np.linalg.inv(self.cam_rot_mat) @ pos_c + self.cam_pos
+
+        return pos_w
+
+    def _setup_camera(self, height=120, width = 212):
+        """Sets up the camera to render the scene from the required view."""
+        # This assumes you have a fixed camera in your model XML
+        self.camera_id = self.sim.model.camera_name2id('end_effector_cam')
+        #self.get_camera_matrices(self.camera_id, height, width)
+    
+    def compute_camera_matrix(self, camera="end_effector_cam"):
+        """Returns the 3x4 camera matrix."""
+        # If the camera is a 'free' camera, we get its position and orientation
+        # from the scene data structure. It is a stereo camera, so we average over
+        # the left and right channels. Note: we call `self.update()` in order to
+        # ensure that the contents of `scene.camera` are correct.
+
+        pos = self.sim.data.cam_xpos[self.sim.model.camera_name2id(camera)]
+        rot_mat = self.sim.data.cam_xmat[self.sim.model.camera_name2id(camera)].reshape(3, 3)
+        camera_id = self.sim.model.camera_name2id(camera)
+        fov = self.sim.model.cam_fovy[camera_id]
+
+        # Translation matrix (4x4).
+        translation = np.eye(4)
+        translation[0:3, 3] = -pos
+
+        # Rotation matrix (4x4).
+        rotation = np.eye(4)
+        rotation[0:3, 0:3] = rot_mat.T
+
+        # Focal transformation matrix (3x4).
+        focal_scaling = (1./np.tan(np.deg2rad(fov)/2)) * self.IMAGE_HEIGHT / 2.0
+        focal = np.diag([-focal_scaling, focal_scaling, 1.0, 0])[0:3, :]
+
+        # Image matrix (3x3).
+        image = np.eye(3)
+        image[0, 2] = (self.IMAGE_WIDTH - 1) / 2.0
+        image[1, 2] = (self.IMAGE_HEIGHT - 1) / 2.0
+        return image @ focal @ rotation @ translation
+    
+
+    def world_2_pixel(self, world_coordinate, camera_matrix):
+        """
+        Takes a XYZ world position and transforms it into pixel coordinates.
+        Mainly implemented for testing the correctness of the camera matrix, focal length etc.
+
+        Args:
+            world_coordinate: XYZ world coordinate to be transformed into pixel space.
+            width: Width of the image (pixel).
+            height: Height of the image (pixel).
+            camera: Name of camera used to obtain the image.
+        """
+        
+        w = np.ones((4,), dtype=float)
+        w[0:3] = world_coordinate
+        xs, ys, s = camera_matrix @ w 
+        x = xs / s
+        y = ys / s 
+        return np.round(x).astype(int), np.round(y).astype(int)
+    
+    def calculate_radius(self, d_depth):
+        """
+        Calculates the radius based on the depth.
+        The function can be adjusted based on empirical data or desired visualization effect.
+        """
+        base_radius = 20  # Maximum radius when object is at depth zero
+        if d_depth > 0:
+            radius = base_radius*0.2/d_depth
+            return radius  # Example function: Decrease radius with depth
+        else:
+            return 5
+    
+    def object_augment(self, object_id, object_name):
+        self.obj_scale_range = ({'low': -np.array(self.obj_scale_change), 'high': self.obj_scale_change} 
+                                if self.obj_scale_change else None)
+        
+        self.obj_mass_range = ({'low': self.sim.model.body_mass[object_id] + self.obj_mass_change[0], 
+                                'high': self.sim.model.body_mass[object_id] + self.obj_mass_change[1]}
+                                if self.obj_mass_change else None
+                                )
+        self.obj_friction_range = ({'low': self.sim.model.geom_friction[object_id] - self.obj_friction_change,
+                                    'high': self.sim.model.geom_friction[object_id] + self.obj_friction_change}
+                                    if self.obj_friction_change else None)
+
+
+        object_gid = self.sim.model.body(object_id).geomadr + 1
+        self.obj_size0 = self.sim.model.geom_size[object_gid].copy()
+        
+        if self.obj_scale_change:
+            if object_name != 'block':
+              if object_name == 'beaker':
+                object_name = 'rbf'
+                self.__center_box_mesh(object_id, object_name)
+
+        if self.obj_scale_range:
+            self.sim.model.body_mass[object_id] = self.np_random.uniform( **self.obj_mass_range)
+
+        if self.obj_friction_range:
+            self.sim.model.geom_friction[object_id] = self.np_random.uniform( **self.obj_friction_range)
+        
+        if self.obj_scale_range:
+            obj_scales = self.np_random.uniform( **self.obj_scale_range) + 1
+            self.sim.model.geom(object_id).size = self.obj_size0 * obj_scales
+
+            if self.sim.renderer._window:
+                self.sim.model.mesh_vert[self.obj_vert_addr] = obj_scales[None, :] * self.mesh_vert0
+                self.sim_renderer._windows.update_mesh(self.obj_mid)
+       
+        self.sim.forward()
+
+    def __center_box_mesh(self, object_id, object_name):
+        """
+        Adjusts the mesh geom's transform and vertices so scaling is straightforward afterwards. Only makes sense
+        to call this method within setup after relevant ids have been identified.
+        """
+
+        self.obj_gid = self.sim.model.body(object_id).geomadr + 1
+        self.obj_mid = next(i for i in range(self.sim.model.nmesh)
+                            if object_name in self.sim.model.mesh(i).name)
+        self.obj_size0 = self.sim.model.geom_size[self.obj_gid].copy()
+        self.obj_vert_addr = np.arange(self.sim.model.mesh(self.obj_mid).vertadr,
+                                       self.sim.model.mesh(self.obj_mid).vertadr + self.sim.model.mesh(0).vertnum)
+        q = self.sim.model.geom(self.obj_gid - 1).quat
+        r = R.from_quat([q[1], q[2], q[3], q[0]])
+        self.sim.model.mesh_vert[self.obj_vert_addr] = r.apply(self.sim.model.mesh_vert[self.obj_vert_addr])
+        self.sim.model.mesh_normal[self.obj_vert_addr] = r.apply(self.sim.model.mesh_normal[self.obj_vert_addr])
+        self.sim.model.geom(self.obj_gid - 1).quat = [1, 0, 0, 0]
+        self.sim.model.mesh_vert[self.obj_vert_addr] += (self.sim.model.geom(self.obj_gid - 1).pos
+                                                         - self.sim.model.geom(self.obj_gid).pos)[None, :]
+
+        self.sim.model.geom(self.obj_gid - 1).pos = self.sim.model.geom(self.obj_gid).pos
+        self.mesh_vert0 = self.sim.model.mesh_vert[self.obj_vert_addr].copy()
+        #self.ignore_first_scale = True
