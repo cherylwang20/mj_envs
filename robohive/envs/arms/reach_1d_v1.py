@@ -173,6 +173,7 @@ class ReachBaseV0(env_base_1.MujocoEnv):
         obs_dict = {}
         obs_dict['time'] = np.array([self.sim.data.time])
         obs_dict['qp_robot'] = sim.data.qpos[:7].copy() + np.random.normal(loc=0, scale=0.1, size=7)
+        #print(obs_dict['qp_robot'])
         obs_dict['qv_robot'] = self.vel_action.copy() + np.random.normal(loc=0, scale=0.1, size=7)
         #print('gripper velocity & position', obs_dict['qp_robot'][-1], obs_dict['qv_robot'][-1])
         obs_dict['xmat_pinch'] = mat2euler(np.reshape(self.sim.data.site_xmat[self.grasp_sid], (3, 3)))
@@ -249,15 +250,14 @@ class ReachBaseV0(env_base_1.MujocoEnv):
             ('sparse',  pix_perc),
             ('solved',  np.array([self.touch_success]) >= 1),
             ('gripper_height',  gripper_height - 0.83),
-            ('done', np.array([self.touch_success >= 1])), #    obj_height  - self.obj_init_z > 0.2, #reach_dist > far_th
+            ('done', np.array([0])), #    obj_height  - self.obj_init_z > 0.2, #reach_dist > far_th
         ))
+        #print([wt*rwd_dict[key] for key, wt in self.rwd_keys_wt.items()])
         if not self.eval_mode:
             rwd_dict['dense'] = np.sum([wt*rwd_dict[key] for key, wt in self.rwd_keys_wt.items()], axis=0)
         else:
             rwd_dict['dense'] = 1.0 if contact == 2 else 0
             rwd_dict['done'] = contact == 2
-        gripper_width = np.linalg.norm([self.sim.data.site_xpos[self.sim.model.site_name2id('left_silicone_pad')]- 
-                                 self.sim.data.site_xpos[self.sim.model.site_name2id('right_silicone_pad')]], axis = -1)
         return rwd_dict
     
     def reset(self, reset_qpos=None, reset_qvel=None, **kwargs):
